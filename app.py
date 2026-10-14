@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
 import plotly.graph_objects as go
 from dataclasses import dataclass, field
 from typing import List, Optional, Literal
 from datetime import time, datetime, timedelta
 
-st.set_page_config(page_title="Personal AlgoTest Clone", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Personal AlgoTest — Dhan Edition", layout="wide", page_icon="⚡")
 
 # ==========================================
 # 1. CORE ENGINE & DATA STRUCTURES
@@ -45,6 +46,7 @@ class ActiveLegState:
     config: OptionLeg
     strike: int
     base_price: float
+    security_id: str = ""
     entry_price: Optional[float] = None
     entry_time: Optional[pd.Timestamp] = None
     exit_price: Optional[float] = None
@@ -55,7 +57,89 @@ class ActiveLegState:
     status: Literal["WAITING", "OPEN", "CLOSED"] = "WAITING"
 
 # ==========================================
-# 2. SYNTHETIC 1-MIN OPTIONS DATA GENERATOR
+# 2. DHANHQ V2 API CLIENT (BUILT-IN)
+# ==========================================
+
+class DhanBrokerClient:
+    BASE_URL = "https://api.dhan.co/v2"
+
+    def __init__(self, client_id: str, access_token: str):
+        self.client_id = client_id.strip()
+        self.access_token = access_token.strip()
+        self.headers = {
+            "access-token": self.access_token,
+            "client-id": self.client_id,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+    def get_fund_limits(self) -> dict:
+        resp = requests.get(f"{self.BASE_URL}/fundlimit", headers=self.headers, timeout=10)
+        return resp.json() if resp.status_code == 200 else {"error": resp.text}
+
+    def get_positions(self) -> dict:
+        resp = requests.get(f"{self.BASE_URL}/positions", headers=self.headers, timeout=10)
+        return resp.json() if resp.status_code == 200 else {"error": resp.text}
+
+    def get_orders(self) -> dict:
+        resp = requests.get(f"{self.BASE_URL}/orders", headers=self.headers, timeout=10)
+        return resp.json() if resp.status_code == 200 else {"error": resp.text}
+
+    def place_order(
+        self,
+        security_id: str,
+        transaction_type: str,
+        quantity: int,
+        order_type: str = "MARKET",
+        price: float = 0.0,
+        trigger_price: float = 0.0
+    ) -> dict:
+        payload = {
+            "dhanClientId": self.client_id,
+            "transactionType": transaction_type,
+            "exchangeSegment": "NSE_FNO",
+            "productType": "INTRADAY",
+            "orderType": order_type,
+            "validity": "DAY",
+            "securityId": str(security_id),
+            "quantity": int(quantity),
+            "disclosedQuantity": 0,
+            "price": float(price),
+            "triggerPrice": float(trigger_price),
+            "afterMarketOrder": False
+        }
+        resp = requests.post(f"{self.BASE_URL}/orders", json=payload, headers=self.headers, timeout=10)
+        return resp.json()
+
+    def get_option_chain(self, underlying_scrip: int, expiry_date: str) -> dict:
+        # Nifty 50 Index Security ID = 13, BankNifty = 25 in IDX_I
+        payload = {
+            "UnderlyingScrip": underlying_scrip,
+            "UnderlyingSeg": "IDX_I",
+            "Expiry": expiry_date
+        }
+        resp = requests.post(f"{self.BASE_URL}/optionchain", json=payload, headers=self.headers, timeout=10)
+        return resp.json()
+
+@st.cache_data(ttl=3600)
+def load_dhan_fno_master() -> pd.DataFrame:
+    """Downloads Dhan's official compact instrument master and filters NSE F&O options."""
+    url = "https://images.dhan.co/api-data/api-scrip-master.csv"
+    cols = [
+        "SEM_EXM_EXCH_ID", "SEM_SEGMENT", "SEM_SMST_SECURITY_ID",
+        "SEM_INSTRUMENT_NAME", "SEM_TRADING_SYMBOL", "SEM_LOT_UNITS",
+        "SEM_EXPIRY_DATE", "SEM_STRIKE_PRICE", "SEM_OPTION_TYPE"
+    ]
+    try:
+        df = pd.read_csv(url, usecols=cols, low_memory=False)
+        df = df[(df["SEM_EXM_EXCH_ID"] == "NSE") & (df["SEM_SEGMENT"] == "D") & (df["SEM_INSTRUMENT_NAME"] == "OPTIDX")]
+        df["SEM_STRIKE_PRICE"] = pd.to_numeric(df["SEM_STRIKE_PRICE"], errors="coerce").fillna(0).astype(int)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# ==========================================
+# 3. SYNTHETIC 1-MIN OPTIONS DATA GENERATOR
 # ==========================================
 
 @st.cache_data
@@ -113,7 +197,7 @@ def generate_sample_options_data(days: int = 30, underlying: str = "NIFTY") -> p
     return pd.DataFrame(records)
 
 # ==========================================
-# 3. INDIAN TAXES & BROKERAGE CALCULATOR
+# 4. INDIAN TAXES & BACKTEST ENGINE
 # ==========================================
 
 def calculate_indian_charges(entry_price: float, exit_price: float, qty: int, action: str) -> float:
@@ -129,10 +213,6 @@ def calculate_indian_charges(entry_price: float, exit_price: float, qty: int, ac
     gst = 0.18 * (brokerage + txn_charges + sebi_charges)
     
     return round(brokerage + stt + txn_charges + sebi_charges + stamp_duty + gst, 2)
-
-# ==========================================
-# 4. BACKTEST EXECUTION ENGINE
-# ==========================================
 
 def run_backtest(df: pd.DataFrame, strategy: StrategyConfig) -> tuple[pd.DataFrame, pd.DataFrame]:
     step = 50 if strategy.underlying == "NIFTY" else 100
@@ -293,10 +373,10 @@ def run_backtest(df: pd.DataFrame, strategy: StrategyConfig) -> tuple[pd.DataFra
     return pd.DataFrame(daily_results), pd.DataFrame(trade_logs)
 
 # ==========================================
-# 5. STREAMLIT UI & VISUAL STRATEGY BUILDER
+# 5. SHARED STRATEGY BUILDER UI
 # ==========================================
 
-st.title("⚡ Personal AlgoTest — Multi-Leg Options Backtester")
+st.title("⚡ Personal AlgoTest — Strategy Builder & Dhan Execution")
 
 if "legs" not in st.session_state:
     st.session_state.legs = [
@@ -315,22 +395,16 @@ if "legs" not in st.session_state:
     ]
 
 with st.container(border=True):
-    st.subheader("1. Index & Timing Configuration")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    st.subheader("1. Strategy & Multi-Leg Setup")
+    c1, c2, c3, c4 = st.columns(4)
     underlying = c1.selectbox("Underlying Index", ["NIFTY", "BANKNIFTY"])
     lot_size = 75 if underlying == "NIFTY" else 30
-    c1.caption(f"Lot Size: {lot_size}")
+    c1.caption(f"Standard Lot Size: {lot_size}")
     entry_t = c2.time_input("Entry Time", value=time(9, 20))
     exit_t = c3.time_input("Exit Time", value=time(15, 15))
-    sim_days = c4.slider("Backtest Horizon (Days)", 10, 90, 30)
-    data_source = c5.radio("Data Source", ["Built-in Simulator", "Upload CSV/Parquet"])
+    move_to_cost = c4.checkbox("Move SL to Cost on Leg SL", value=True)
 
-    uploaded_file = None
-    if data_source == "Upload CSV/Parquet":
-        uploaded_file = st.file_uploader("Upload 1-min Options Data", type=["csv", "parquet"])
-
-with st.container(border=True):
-    st.subheader("2. Multi-Leg Builder")
+    st.divider()
     for idx, leg in enumerate(st.session_state.legs):
         cols = st.columns([1, 1, 1, 1.8, 1.2, 1.2, 1.2, 1.2, 1.2, 0.7])
         act_idx = 0 if leg["action"] == "SELL" else 1
@@ -361,90 +435,187 @@ with st.container(border=True):
         })
         st.rerun()
 
-with st.container(border=True):
-    st.subheader("3. Portfolio Risk & Execution Settings")
-    r1, r2, r3, r4, r5 = st.columns(5)
-    move_to_cost = r1.checkbox("Move SL to Cost on Leg SL", value=True)
-    include_taxes = r2.checkbox("Deduct Brokerage & STT", value=True)
-    overall_sl = r3.number_input("Overall MTM Stop Loss (₹)", min_value=0.0, value=4000.0, step=500.0)
-    overall_tgt = r4.number_input("Overall MTM Target (₹)", min_value=0.0, value=0.0, step=500.0)
-    slippage = r5.number_input("Slippage (%)", min_value=0.0, max_value=5.0, value=0.5, step=0.1)
+    r1, r2, r3, r4 = st.columns(4)
+    overall_sl = r1.number_input("Overall MTM Stop Loss (₹)", min_value=0.0, value=4000.0, step=500.0)
+    overall_tgt = r2.number_input("Overall MTM Target (₹)", min_value=0.0, value=0.0, step=500.0)
+    slippage = r3.number_input("Slippage (%)", min_value=0.0, max_value=5.0, value=0.5, step=0.1)
+    include_taxes = r4.checkbox("Deduct Brokerage & STT", value=True)
 
 # ==========================================
-# 6. RUN BACKTEST & RENDER ALGOTEST REPORT
+# 6. TABS: BACKTESTER VS. DHAN LIVE EXECUTION
 # ==========================================
 
-if st.button("🚀 Run Backtest", type="primary", use_container_width=True):
-    if data_source == "Upload CSV/Parquet" and uploaded_file is not None:
-        if uploaded_file.name.endswith(".parquet"):
-            df_data = pd.read_parquet(uploaded_file)
+tab_bt, tab_dhan = st.tabs(["📊 Historical Backtester", "🟢 Dhan Broker Live & Paper Trading"])
+
+with tab_bt:
+    b1, b2 = st.columns([1, 2])
+    sim_days = b1.slider("Backtest Horizon (Trading Days)", 10, 90, 30)
+    data_source = b2.radio("Historical Data Source", ["Built-in Simulator", "Upload CSV/Parquet"], horizontal=True)
+    uploaded_file = None
+    if data_source == "Upload CSV/Parquet":
+        uploaded_file = st.file_uploader("Upload 1-min Options Data", type=["csv", "parquet"])
+
+    if st.button("🚀 Run Strategy Backtest", type="primary", use_container_width=True):
+        if data_source == "Upload CSV/Parquet" and uploaded_file is not None:
+            if uploaded_file.name.endswith(".parquet"):
+                df_data = pd.read_parquet(uploaded_file)
+            else:
+                df_data = pd.read_csv(uploaded_file, parse_dates=["timestamp", "date"])
         else:
-            df_data = pd.read_csv(uploaded_file, parse_dates=["timestamp", "date"])
-    else:
-        df_data = generate_sample_options_data(days=sim_days, underlying=underlying)
+            df_data = generate_sample_options_data(days=sim_days, underlying=underlying)
 
-    leg_objs = [
-        OptionLeg(
-            leg_id=i + 1, action=l["action"], option_type=l["option_type"], lots=l["lots"],
-            strike_selection=l["strike_selection"], strike_value=l["strike_value"],
-            wait_and_trade_pct=l["wait_pct"], sl_type=l["sl_type"], sl_value=l["sl_value"],
-            target_type=l["target_type"], target_value=l["target_value"]
-        ) for i, l in enumerate(st.session_state.legs)
-    ]
+        leg_objs = [
+            OptionLeg(
+                leg_id=i + 1, action=l["action"], option_type=l["option_type"], lots=l["lots"],
+                strike_selection=l["strike_selection"], strike_value=l["strike_value"],
+                wait_and_trade_pct=l["wait_pct"], sl_type=l["sl_type"], sl_value=l["sl_value"],
+                target_type=l["target_type"], target_value=l["target_value"]
+            ) for i, l in enumerate(st.session_state.legs)
+        ]
 
-    cfg = StrategyConfig(
-        name="Custom Strategy", underlying=underlying, lot_size=lot_size,
-        entry_time=entry_t, exit_time=exit_t, legs=leg_objs,
-        move_sl_to_cost=move_to_cost, overall_sl_mtm=overall_sl,
-        overall_target_mtm=overall_tgt, slippage_pct=slippage, include_charges=include_taxes
-    )
+        cfg = StrategyConfig(
+            name="Custom Strategy", underlying=underlying, lot_size=lot_size,
+            entry_time=entry_t, exit_time=exit_t, legs=leg_objs,
+            move_sl_to_cost=move_to_cost, overall_sl_mtm=overall_sl,
+            overall_target_mtm=overall_tgt, slippage_pct=slippage, include_charges=include_taxes
+        )
 
-    daily_df, trades_df = run_backtest(df_data, cfg)
-    daily_df["Cumulative Net PnL"] = daily_df["Net PnL"].cumsum()
-    daily_df["Peak"] = daily_df["Cumulative Net PnL"].cummax()
-    daily_df["Drawdown"] = daily_df["Cumulative Net PnL"] - daily_df["Peak"]
+        daily_df, trades_df = run_backtest(df_data, cfg)
+        daily_df["Cumulative Net PnL"] = daily_df["Net PnL"].cumsum()
+        daily_df["Peak"] = daily_df["Cumulative Net PnL"].cummax()
+        daily_df["Drawdown"] = daily_df["Cumulative Net PnL"] - daily_df["Peak"]
 
-    total_net = daily_df["Net PnL"].sum()
-    gross_sum = daily_df["Gross PnL"].sum()
-    charges_sum = daily_df["Charges"].sum()
-    max_dd = daily_df["Drawdown"].min()
-    wins = daily_df[daily_df["Net PnL"] > 0]
-    losses = daily_df[daily_df["Net PnL"] <= 0]
-    win_rate = (len(wins) / len(daily_df)) * 100 if len(daily_df) > 0 else 0.0
-    avg_win = wins["Net PnL"].mean() if not wins.empty else 0.0
-    avg_loss = abs(losses["Net PnL"].mean()) if not losses.empty else 0.0
-    expectancy = ((win_rate / 100.0 * avg_win) - ((1 - win_rate / 100.0) * avg_loss)) / avg_loss if avg_loss > 0 else 0.0
-    ret_mdd = abs(total_net / max_dd) if max_dd != 0 else 0.0
+        total_net = daily_df["Net PnL"].sum()
+        gross_sum = daily_df["Gross PnL"].sum()
+        charges_sum = daily_df["Charges"].sum()
+        max_dd = daily_df["Drawdown"].min()
+        wins = daily_df[daily_df["Net PnL"] > 0]
+        losses = daily_df[daily_df["Net PnL"] <= 0]
+        win_rate = (len(wins) / len(daily_df)) * 100 if len(daily_df) > 0 else 0.0
+        avg_win = wins["Net PnL"].mean() if not wins.empty else 0.0
+        avg_loss = abs(losses["Net PnL"].mean()) if not losses.empty else 0.0
+        expectancy = ((win_rate / 100.0 * avg_win) - ((1 - win_rate / 100.0) * avg_loss)) / avg_loss if avg_loss > 0 else 0.0
+        ret_mdd = abs(total_net / max_dd) if max_dd != 0 else 0.0
 
-    st.subheader("📊 Strategy Report Card")
-    m1, m2, m3, m4, m5, m6 = st.columns(6)
-    m1.metric("Net Profit (₹)", f"₹{total_net:,.2f}", delta=f"Gross: ₹{gross_sum:,.0f}")
-    m2.metric("Win Rate", f"{win_rate:.1f}%", delta=f"{len(wins)}W / {len(losses)}L")
-    m3.metric("Max Drawdown", f"₹{max_dd:,.2f}")
-    m4.metric("Return / MDD", f"{ret_mdd:.2f}x")
-    m5.metric("Expectancy", f"{expectancy:.2f}")
-    m6.metric("Total Charges", f"₹{charges_sum:,.2f}")
+        st.subheader("📊 Strategy Report Card")
+        m1, m2, m3, m4, m5, m6 = st.columns(6)
+        m1.metric("Net Profit (₹)", f"₹{total_net:,.2f}", delta=f"Gross: ₹{gross_sum:,.0f}")
+        m2.metric("Win Rate", f"{win_rate:.1f}%", delta=f"{len(wins)}W / {len(losses)}L")
+        m3.metric("Max Drawdown", f"₹{max_dd:,.2f}")
+        m4.metric("Return / MDD", f"{ret_mdd:.2f}x")
+        m5.metric("Expectancy", f"{expectancy:.2f}")
+        m6.metric("Total Charges", f"₹{charges_sum:,.2f}")
 
-    c_left, c_right = st.columns(2)
-    with c_left:
-        fig_eq = go.Figure()
-        fig_eq.add_trace(go.Scatter(
-            x=daily_df["Date"], y=daily_df["Cumulative Net PnL"],
-            mode="lines+markers", name="Net Equity", fill="tozeroy",
-            line=dict(color="#10b981", width=2)
-        ))
-        fig_eq.update_layout(title="Cumulative Net PnL Curve (₹)", height=360)
-        st.plotly_chart(fig_eq, use_container_width=True)
+        c_left, c_right = st.columns(2)
+        with c_left:
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(
+                x=daily_df["Date"], y=daily_df["Cumulative Net PnL"],
+                mode="lines+markers", name="Net Equity", fill="tozeroy",
+                line=dict(color="#10b981", width=2)
+            ))
+            fig_eq.update_layout(title="Cumulative Net PnL Curve (₹)", height=360)
+            st.plotly_chart(fig_eq, use_container_width=True)
 
-    with c_right:
-        fig_dd = go.Figure()
-        fig_dd.add_trace(go.Scatter(
-            x=daily_df["Date"], y=daily_df["Drawdown"],
-            mode="lines", name="Drawdown", fill="tozeroy",
-            line=dict(color="#ef4444", width=2)
-        ))
-        fig_dd.update_layout(title="Underwater Drawdown Chart (₹)", height=360)
-        st.plotly_chart(fig_dd, use_container_width=True)
+        with c_right:
+            fig_dd = go.Figure()
+            fig_dd.add_trace(go.Scatter(
+                x=daily_df["Date"], y=daily_df["Drawdown"],
+                mode="lines", name="Drawdown", fill="tozeroy",
+                line=dict(color="#ef4444", width=2)
+            ))
+            fig_dd.update_layout(title="Underwater Drawdown Chart (₹)", height=360)
+            st.plotly_chart(fig_dd, use_container_width=True)
 
-    st.subheader("📜 Detailed Leg-Wise Trade Log")
-    st.dataframe(trades_df, use_container_width=True, hide_index=True)
+        st.subheader("📜 Detailed Leg-Wise Trade Log")
+        st.dataframe(trades_df, use_container_width=True, hide_index=True)
+
+with tab_dhan:
+    st.subheader("🟢 DhanHQ v2 Live Execution & Forward Testing")
+    st.caption("Get your Client ID & 24-hour Access Token from web.dhan.co -> My Profile -> Access DhanHQ APIs")
+
+    d1, d2, d3 = st.columns([1.5, 2.5, 1.5])
+    dhan_client_id = d1.text_input("Dhan Client ID", placeholder="e.g. 1100001234")
+    dhan_token = d2.text_input("Dhan JWT Access Token", type="password", placeholder="Paste your Dhan v2 Access Token")
+    exec_mode = d3.radio("Execution Mode", ["Paper Trade (Forward Test)", "LIVE Real Money Orders"])
+
+    client = DhanBrokerClient(dhan_client_id, dhan_token) if dhan_client_id and dhan_token else None
+
+    col_btn1, col_btn2, col_btn3 = st.columns(3)
+    if col_btn1.button("🔌 Verify Dhan Connection & Margin", use_container_width=True):
+        if not client:
+            st.warning("Please enter both your Dhan Client ID and Access Token.")
+        else:
+            funds = client.get_fund_limits()
+            if "availabelBalance" in funds or "dhanClientId" in funds:
+                avail = funds.get("availabelBalance", funds.get("availableBalance", 0))
+                st.success(f"Connected to Dhan Account {dhan_client_id}! Available Margin: ₹{avail:,.2f}")
+                st.json(funds)
+            else:
+                st.error(f"Connection Failed: {funds}")
+
+    if col_btn2.button("⚡ Deploy Strategy Legs Now", type="primary", use_container_width=True):
+        st.info(f"Deploying {len(st.session_state.legs)} legs in **{exec_mode}** mode...")
+        master_df = load_dhan_fno_master()
+        step = 50 if underlying == "NIFTY" else 100
+        ref_spot = 24500 if underlying == "NIFTY" else 52000
+        atm_strike = int(round(ref_spot / step) * step)
+
+        order_results = []
+        for i, leg in enumerate(st.session_state.legs):
+            target_strike = int(atm_strike + leg["strike_value"]) if leg["strike_selection"] == "ATM_OFFSET" else atm_strike
+            qty = int(leg["lots"] * lot_size)
+            sec_id = "N/A"
+            symbol_name = f"{underlying} {target_strike} {leg['option_type']}"
+
+            if not master_df.empty:
+                sub = master_df[
+                    (master_df["SEM_TRADING_SYMBOL"].str.startswith(underlying)) &
+                    (master_df["SEM_STRIKE_PRICE"] == target_strike) &
+                    (master_df["SEM_OPTION_TYPE"] == leg["option_type"])
+                ].sort_values("SEM_EXPIRY_DATE")
+                if not sub.empty:
+                    sec_id = str(sub.iloc[0]["SEM_SMST_SECURITY_ID"])
+                    symbol_name = str(sub.iloc[0]["SEM_TRADING_SYMBOL"])
+
+            if exec_mode == "Paper Trade (Forward Test)":
+                order_results.append({
+                    "Leg": i + 1,
+                    "Mode": "PAPER",
+                    "Symbol": symbol_name,
+                    "Dhan Security ID": sec_id,
+                    "Action": leg["action"],
+                    "Qty": qty,
+                    "Status": "SIMULATED_FILLED"
+                })
+            else:
+                if not client:
+                    st.error("Enter Dhan credentials before firing LIVE orders.")
+                    break
+                resp = client.place_order(
+                    security_id=sec_id,
+                    transaction_type=leg["action"],
+                    quantity=qty,
+                    order_type="MARKET"
+                )
+                order_results.append({
+                    "Leg": i + 1,
+                    "Mode": "LIVE",
+                    "Symbol": symbol_name,
+                    "Dhan Security ID": sec_id,
+                    "Action": leg["action"],
+                    "Qty": qty,
+                    "API Response": str(resp)
+                })
+
+        if order_results:
+            st.dataframe(pd.DataFrame(order_results), use_container_width=True, hide_index=True)
+
+    if col_btn3.button("🚨 Fetch Live Positions / Orderbook", use_container_width=True):
+        if not client:
+            st.warning("Enter your Dhan credentials first.")
+        else:
+            pos = client.get_positions()
+            ords = client.get_orders()
+            st.write("**Open Dhan Positions:**", pos)
+            st.write("**Today's Dhan Orders:**", ords)
