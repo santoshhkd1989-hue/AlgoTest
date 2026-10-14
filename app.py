@@ -30,28 +30,28 @@ class DhanHQClient:
 
     def get_fund_limits(self) -> dict:
         try:
-            r = requests.get(f"{self.BASE_URL}/fundlimit", headers=self.headers, timeout=10)
+            r = requests.get(f"{self.BASE_URL}/fundlimit", headers=self.headers, timeout=8)
             return r.json() if r.status_code == 200 else {"error": r.text}
         except Exception as e:
             return {"error": str(e)}
 
     def get_holdings(self) -> list | dict:
         try:
-            r = requests.get(f"{self.BASE_URL}/holdings", headers=self.headers, timeout=10)
+            r = requests.get(f"{self.BASE_URL}/holdings", headers=self.headers, timeout=8)
             return r.json() if r.status_code == 200 else {"error": r.text}
         except Exception as e:
             return {"error": str(e)}
 
     def get_positions(self) -> list | dict:
         try:
-            r = requests.get(f"{self.BASE_URL}/positions", headers=self.headers, timeout=10)
+            r = requests.get(f"{self.BASE_URL}/positions", headers=self.headers, timeout=8)
             return r.json() if r.status_code == 200 else {"error": r.text}
         except Exception as e:
             return {"error": str(e)}
 
     def get_orders(self) -> list | dict:
         try:
-            r = requests.get(f"{self.BASE_URL}/orders", headers=self.headers, timeout=10)
+            r = requests.get(f"{self.BASE_URL}/orders", headers=self.headers, timeout=8)
             return r.json() if r.status_code == 200 else {"error": r.text}
         except Exception as e:
             return {"error": str(e)}
@@ -69,9 +69,9 @@ class DhanHQClient:
         payload = {
             "dhanClientId": self.client_id,
             "transactionType": transaction_type,
-            "exchangeSegment": exchange_segment,  # 'NSE_EQ' or 'BSE_EQ'
+            "exchangeSegment": exchange_segment,
             "productType": "CNC",
-            "orderType": order_type,              # 'MARKET' or 'LIMIT'
+            "orderType": order_type,
             "validity": "DAY",
             "securityId": str(security_id),
             "quantity": int(quantity),
@@ -81,7 +81,7 @@ class DhanHQClient:
             "afterMarketOrder": bool(after_market)
         }
         try:
-            r = requests.post(f"{self.BASE_URL}/orders", json=payload, headers=self.headers, timeout=10)
+            r = requests.post(f"{self.BASE_URL}/orders", json=payload, headers=self.headers, timeout=8)
             return r.json()
         except Exception as e:
             return {"error": str(e)}
@@ -94,7 +94,6 @@ class DhanHQClient:
         target_price: float,
         sl_price: float
     ) -> dict:
-        """Places a Dhan Forever (GTT OCO) Sell Order for Swing Target + Stop Loss."""
         payload = {
             "dhanClientId": self.client_id,
             "orderFlag": "OCO",
@@ -113,7 +112,7 @@ class DhanHQClient:
             "quantity1": int(quantity)
         }
         try:
-            r = requests.post(f"{self.BASE_URL}/forever/orders", json=payload, headers=self.headers, timeout=10)
+            r = requests.post(f"{self.BASE_URL}/forever/orders", json=payload, headers=self.headers, timeout=8)
             return r.json()
         except Exception as e:
             return {"error": str(e)}
@@ -141,7 +140,7 @@ def resolve_dhan_security_id(symbol: str, exchange: str = "NSE") -> str:
     return "N/A"
 
 # ==========================================
-# 2. GLOBAL DHAN SIDEBAR CONNECTION
+# 2. GLOBAL SAFE DHAN SIDEBAR
 # ==========================================
 
 st.sidebar.header("🟢 DhanHQ v2 Broker Link")
@@ -154,22 +153,28 @@ global_mode = st.sidebar.radio("Execution Mode", ["Paper Swing Trade", "LIVE Dha
 
 dhan_client = DhanHQClient(dhan_cid, dhan_tok) if (dhan_cid and dhan_tok) else None
 
-if st.sidebar.button("🔌 Connect & Check Dhan Margin", use_container_width=True):
+col_sb1, col_sb2 = st.sidebar.columns(2)
+if col_sb1.button("🔌 Connect", use_container_width=True):
     if not dhan_client:
-        st.sidebar.warning("Enter Client ID & JWT Access Token first.")
+        st.sidebar.warning("Enter credentials.")
     else:
         funds = dhan_client.get_fund_limits()
-        if "availabelBalance" in funds or "availableBalance" in funds or "dhanClientId" in funds:
+        if isinstance(funds, dict) and ("availabelBalance" in funds or "availableBalance" in funds or "dhanClientId" in funds):
             bal = funds.get("availabelBalance", funds.get("availableBalance", 0.0))
             st.session_state["dhan_connected"] = True
             st.session_state["dhan_balance"] = float(bal)
-            st.sidebar.success(f"Connected! Margin: ₹{float(bal):,.2f}")
+            st.sidebar.success(f"Connected! ₹{float(bal):,.2f}")
         else:
             st.session_state["dhan_connected"] = False
-            st.sidebar.error(f"Token Error: {funds}")
+            st.sidebar.error("Auth Failed")
+
+if col_sb2.button("🔌 Disconnect", use_container_width=True):
+    st.session_state["dhan_connected"] = False
+    st.session_state["dhan_balance"] = 0.0
+    st.sidebar.info("Disconnected from Dhan.")
 
 if st.session_state.get("dhan_connected"):
-    st.sidebar.metric("Available Dhan Margin (₹)", f"₹{st.session_state.get('dhan_balance', 0.0):,.2f}")
+    st.sidebar.metric("Available Margin (₹)", f"₹{st.session_state.get('dhan_balance', 0.0):,.2f}")
 
 # ==========================================
 # 3. NSE & BSE UNIVERSE & SMC ENGINE
@@ -333,10 +338,6 @@ def fetch_and_scan_universe(tickers: list[str]) -> pd.DataFrame:
         out_df = out_df.sort_values(by=["SMC Score", "RSI (14)"], ascending=[False, False])
     return out_df
 
-# ==========================================
-# 4. SMC SWING BACKTESTER ENGINE
-# ==========================================
-
 def backtest_smc_swing(df: pd.DataFrame, capital: float = 100000.0, risk_pct: float = 1.5, rr_mult: float = 2.5) -> tuple[pd.DataFrame, dict]:
     df = calculate_smc_features(df)
     in_trade = False
@@ -404,7 +405,7 @@ def backtest_smc_swing(df: pd.DataFrame, capital: float = 100000.0, risk_pct: fl
     }
 
 # ==========================================
-# 5. MAIN UI TABS
+# 4. MAIN UI TABS
 # ==========================================
 
 st.title("🏦 SMC Institutional Swing Trader — Connected to DhanHQ v2")
@@ -419,9 +420,6 @@ tabs = st.tabs([
     "💼 4. Dhan Live Portfolio, Forever GTT & Orderbook"
 ])
 
-# ------------------------------------------
-# TAB 1: SCANNER + ONE-CLICK DHAN BRIDGE
-# ------------------------------------------
 with tabs[0]:
     c1, c2, c3, c4 = st.columns([1.8, 2.2, 1, 1])
     basket_choice = c1.selectbox("Select Market Universe", list(NSE_BSE_UNIVERSE.keys()))
@@ -439,4 +437,138 @@ with tabs[0]:
 
     if "scan_df" in st.session_state and not st.session_state["scan_df"].empty:
         df_f = st.session_state["scan_df"][st.session_state["scan_df"]["SMC Score"] >= min_score].copy()
-        risk_rs = capital_size * 0.
+        risk_rs = capital_size * 0.015
+        df_f["Qty (1.5% Risk)"] = (risk_rs / df_f["Risk/Share (₹)"]).clip(lower=1).astype(int)
+
+        st.dataframe(df_f, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("⚡ One-Click Execute SMC Pick on Dhan (CNC Delivery + Forever GTT Exit)")
+        if not df_f.empty:
+            e1, e2, e3, e4 = st.columns([2, 1, 1.5, 1.5])
+            options_list = [f"{r['Symbol']} ({r['Exchange']}) | Score: {r['SMC Score']} | ID: {r['Dhan Security ID']}" for _, r in df_f.iterrows()]
+            picked_idx = e1.selectbox("Select Scanned Stock to Trade", range(len(options_list)), format_func=lambda i: options_list[i])
+            picked_row = df_f.iloc[picked_idx]
+
+            exec_qty = e2.number_input("Quantity", min_value=1, value=int(picked_row["Qty (1.5% Risk)"]))
+            ord_type = e3.selectbox("Entry Order Type", ["MARKET", "LIMIT"])
+            attach_gtt = e4.checkbox("Attach Dhan Forever OCO (SL + Target)", value=True)
+
+            if st.button(f"🟢 Fire {global_mode} for {picked_row['Symbol']} on Dhan", type="primary", use_container_width=True):
+                exch_seg = "NSE_EQ" if picked_row["Exchange"] == "NSE" else "BSE_EQ"
+                sec_id = str(picked_row["Dhan Security ID"])
+
+                if global_mode == "Paper Swing Trade":
+                    st.session_state["paper_orders"].append({
+                        "Symbol": picked_row["Symbol"], "Exchange": exch_seg, "Dhan ID": sec_id,
+                        "Qty": exec_qty, "Entry (₹)": picked_row["Entry (₹)"],
+                        "SL (₹)": picked_row["Stop Loss (₹)"], "Target (₹)": picked_row["Target 1 (1:2) (₹)"],
+                        "Status": "PAPER_CNC_ACTIVE"
+                    })
+                    st.success(f"✅ Paper CNC Swing Trade Logged for {picked_row['Symbol']} (Qty: {exec_qty})! Check Tab 4.")
+                else:
+                    if not dhan_client:
+                        st.error("Please enter your Dhan Client ID & JWT Access Token in the left sidebar first!")
+                    else:
+                        entry_resp = dhan_client.place_cnc_order(
+                            security_id=sec_id,
+                            exchange_segment=exch_seg,
+                            transaction_type="BUY",
+                            quantity=exec_qty,
+                            order_type=ord_type,
+                            price=float(picked_row["Entry (₹)"])
+                        )
+                        st.write("**Dhan Entry Order Response:**", entry_resp)
+                        if attach_gtt:
+                            gtt_resp = dhan_client.place_forever_oco_exit(
+                                security_id=sec_id,
+                                exchange_segment=exch_seg,
+                                quantity=exec_qty,
+                                target_price=float(picked_row["Target 1 (1:2) (₹)"]),
+                                sl_price=float(picked_row["Stop Loss (₹)"])
+                            )
+                            st.write("**Dhan Forever OCO (Target + Stop-Loss) Response:**", gtt_resp)
+
+with tabs[1]:
+    chart_sym = st.text_input("Enter NSE (.NS) or BSE (.BO) Ticker", value="ONGC.NS")
+    if st.button("📈 Plot SMC Structure & Order Blocks", type="primary"):
+        raw_c = yf.download(chart_sym, period="6mo", interval="1d", progress=False)
+        if not raw_c.empty:
+            smc_df = calculate_smc_features(raw_c).tail(90)
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(x=smc_df.index, open=smc_df["Open"], high=smc_df["High"], low=smc_df["Low"], close=smc_df["Close"], name=chart_sym))
+            fig.add_trace(go.Scatter(x=smc_df.index, y=smc_df["EMA9"], name="EMA 9", line=dict(color="#3b82f6", width=1.5)))
+            fig.add_trace(go.Scatter(x=smc_df.index, y=smc_df["EMA28"], name="EMA 28", line=dict(color="#f59e0b", width=1.5)))
+
+            bos_pts = smc_df[smc_df["Bull_BOS"]]
+            choch_pts = smc_df[smc_df["Bull_CHoCH"]]
+            fig.add_trace(go.Scatter(x=bos_pts.index, y=bos_pts["High"] * 1.01, mode="markers+text", text=["BOS"] * len(bos_pts), textposition="top center", marker=dict(color="#10b981", size=10, symbol="triangle-up"), name="Bull BOS"))
+            fig.add_trace(go.Scatter(x=choch_pts.index, y=choch_pts["High"] * 1.015, mode="markers+text", text=["CHoCH"] * len(choch_pts), textposition="top center", marker=dict(color="#8b5cf6", size=11, symbol="star"), name="Bull CHoCH"))
+
+            last_row = smc_df.iloc[-1]
+            if not np.isnan(last_row["Active_OB_High"]):
+                fig.add_hrect(y0=float(last_row["Active_OB_Low"]), y1=float(last_row["Active_OB_High"]), fillcolor="rgba(16, 185, 129, 0.18)", line_width=1, line_color="#10b981", annotation_text="Bullish Order Block", annotation_position="bottom right")
+
+            fig.update_layout(height=520, xaxis_rangeslider_visible=False, title=f"{chart_sym} — Daily SMC Chart")
+            st.plotly_chart(fig, use_container_width=True)
+
+with tabs[2]:
+    b1, b2, b3, b4 = st.columns(4)
+    bt_sym = b1.text_input("Stock Symbol (.NS or .BO)", value="ONGC.NS")
+    bt_cap = b2.number_input("Initial Capital (₹)", min_value=10000, value=100000, step=10000)
+    bt_risk = b3.number_input("Risk Per Trade (%)", min_value=0.5, max_value=5.0, value=1.5, step=0.25)
+    bt_rr = b4.number_input("Target R:R Multiple", min_value=1.5, max_value=5.0, value=2.5, step=0.5)
+
+    if st.button("⚡ Run 2-Year SMC Backtest", type="primary", use_container_width=True):
+        hist_2y = yf.download(bt_sym, period="2y", interval="1d", progress=False)
+        if not hist_2y.empty:
+            trades_df, stats = backtest_smc_swing(hist_2y, float(bt_cap), float(bt_risk), float(bt_rr))
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("Net Swing Profit (₹)", f"₹{stats['Net Profit']:,.2f}")
+            k2.metric("Win Rate", f"{stats['Win Rate']}%")
+            k3.metric("Total Swing Trades", stats["Total Trades"])
+            k4.metric("Final Equity (₹)", f"₹{stats['Final Equity']:,.2f}")
+            if not trades_df.empty:
+                st.dataframe(trades_df, use_container_width=True, hide_index=True)
+
+with tabs[3]:
+    st.subheader("💼 Dhan Live Demat Holdings, Positions & Paper Portfolio")
+    p_col1, p_col2, p_col3 = st.columns(3)
+
+    if p_col1.button("📦 Fetch Live Dhan Demat Holdings", use_container_width=True):
+        if not dhan_client:
+            st.warning("Enter Dhan Client ID & Token in the left sidebar.")
+        else:
+            h_data = dhan_client.get_holdings()
+            st.write("**Dhan Demat Swing Holdings (`/v2/holdings`):**")
+            if isinstance(h_data, list) and len(h_data) > 0:
+                st.dataframe(pd.DataFrame(h_data), use_container_width=True, hide_index=True)
+            else:
+                st.json(h_data)
+
+    if p_col2.button("📊 Fetch Active Dhan Positions", use_container_width=True):
+        if not dhan_client:
+            st.warning("Enter Dhan Client ID & Token in the left sidebar.")
+        else:
+            p_data = dhan_client.get_positions()
+            st.write("**Dhan Active Positions (`/v2/positions`):**")
+            if isinstance(p_data, list) and len(p_data) > 0:
+                st.dataframe(pd.DataFrame(p_data), use_container_width=True, hide_index=True)
+            else:
+                st.json(p_data)
+
+    if p_col3.button("📜 Fetch Today's Dhan Orderbook", use_container_width=True):
+        if not dhan_client:
+            st.warning("Enter Dhan Client ID & Token in the left sidebar.")
+        else:
+            o_data = dhan_client.get_orders()
+            st.write("**Dhan Orderbook (`/v2/orders`):**")
+            if isinstance(o_data, list) and len(o_data) > 0:
+                st.dataframe(pd.DataFrame(o_data), use_container_width=True, hide_index=True)
+            else:
+                st.json(o_data)
+
+    if st.session_state["paper_orders"]:
+        st.divider()
+        st.write("**📝 Active Paper Swing Trades:**")
+        st.dataframe(pd.DataFrame(st.session_state["paper_orders"]), use_container_width=True, hide_index=True)
