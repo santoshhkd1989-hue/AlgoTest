@@ -32,7 +32,7 @@ class OptionLeg:
 class StrategyConfig:
     name: str
     underlying: str = "NIFTY"
-    lot_size: int = 75
+    lot_size: int = 65
     entry_time: time = time(9, 20)
     exit_time: time = time(15, 15)
     legs: List[OptionLeg] = field(default_factory=list)
@@ -294,6 +294,7 @@ def run_backtest(df: pd.DataFrame, strategy: StrategyConfig) -> tuple[pd.DataFra
                 trade_logs.append({
                     "Date": day_date,
                     "Leg": f"Leg {s.config.leg_id} ({s.config.action} {s.strike} {s.config.option_type})",
+                    "Qty": qty,
                     "Entry Time": s.entry_time.strftime("%H:%M") if s.entry_time else "-",
                     "Entry (₹)": s.entry_price,
                     "Exit Time": s.exit_time.strftime("%H:%M") if s.exit_time else "-",
@@ -314,9 +315,8 @@ def run_backtest(df: pd.DataFrame, strategy: StrategyConfig) -> tuple[pd.DataFra
     return pd.DataFrame(daily_results), pd.DataFrame(trade_logs)
 
 def run_indicator_backtest(days: int, fast_ema: int, slow_ema: int, rsi_len: int, lot_size: int) -> pd.DataFrame:
-    """Unlimited Indicator Backtest Engine (EMA Crossover + RSI Filter on Spot triggering ATM Options)."""
     np.random.seed(7)
-    n_bars = days * 75  # 5-min bars
+    n_bars = days * 75
     prices = 24500 + np.cumsum(np.random.normal(0, 12, n_bars))
     df = pd.DataFrame({"close": prices})
     df["ema_fast"] = df["close"].ewm(span=fast_ema, adjust=False).mean()
@@ -330,7 +330,6 @@ def run_indicator_backtest(days: int, fast_ema: int, slow_ema: int, rsi_len: int
     df["signal"] = np.where((df["ema_fast"] > df["ema_slow"]) & (df["rsi"] > 52), 1,
                    np.where((df["ema_fast"] < df["ema_slow"]) & (df["rsi"] < 48), -1, 0))
     df["spot_ret"] = df["close"].diff().shift(-1).fillna(0)
-    # Option delta ~ 0.50 on ATM
     df["opt_pnl"] = df["signal"] * df["spot_ret"] * 0.5 * lot_size
     df["cum_pnl"] = df["opt_pnl"].cumsum()
     return df
@@ -347,18 +346,18 @@ if "legs" not in st.session_state:
 
 if "deployments" not in st.session_state:
     st.session_state.deployments = [
-        {"ID": "SIG-101", "Strategy": "9:20 Short Straddle", "Symbol": "NIFTY", "Mode": "LIVE (Listening)", "State": "🟢 LISTENING", "Triggers": 0},
-        {"ID": "SIG-102", "Strategy": "EMA 9/21 Scalper", "Symbol": "BANKNIFTY", "Mode": "FORWARD TEST (Listening)", "State": "🟢 LISTENING", "Triggers": 2},
+        {"ID": "SIG-101", "Strategy": "9:20 Short Straddle", "Symbol": "NIFTY (Lot=65)", "Mode": "LIVE (Listening)", "State": "🟢 LISTENING", "Triggers": 0},
+        {"ID": "SIG-102", "Strategy": "EMA 9/28 Crossover", "Symbol": "NIFTY (Lot=65)", "Mode": "FORWARD TEST (Listening)", "State": "🟢 LISTENING", "Triggers": 2},
     ]
 
 if "watchlists" not in st.session_state:
     st.session_state.watchlists = [
         {"Watchlist": "Index Heavyweights", "Symbols": "HDFCBANK, RELIANCE, ICICIBANK, INFY, TCS", "Signal": "Supertrend (10,3)", "Status": "🟢 Monitoring"},
-        {"Watchlist": "F&O Momentum 10", "Symbols": "SBIN, TATAMOTORS, AXISBANK, BAJFINANCE, LT", "Signal": "EMA 9/21 Cross", "Status": "🟢 Monitoring"}
+        {"Watchlist": "F&O Momentum 10", "Symbols": "ONGC, SBIN, TATAMOTORS, AXISBANK, LT", "Signal": "EMA 9/28 Cross", "Status": "🟢 Monitoring"}
     ]
 
 # ==========================================
-# 5. MAIN NAVIGATION TABS (ALL PRO FEATURES)
+# 5. MAIN NAVIGATION TABS
 # ==========================================
 
 st.title("⚡ AlgoTest Pro — Unlimited Personal Suite (Dhan Edition)")
@@ -372,19 +371,16 @@ tabs = st.tabs([
     "🟢 Dhan Live Terminal"
 ])
 
-# ------------------------------------------
-# TAB 1: MULTI-LEG OPTIONS BACKTESTER
-# ------------------------------------------
 with tabs[0]:
     with st.container(border=True):
         st.subheader("1. Strategy & Multi-Leg Setup")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         underlying = c1.selectbox("Underlying Index", ["NIFTY", "BANKNIFTY"])
-        lot_size = 75 if underlying == "NIFTY" else 30
-        c1.caption(f"Lot Size: {lot_size}")
-        entry_t = c2.time_input("Entry Time", value=time(9, 20))
-        exit_t = c3.time_input("Exit Time", value=time(15, 15))
-        move_to_cost = c4.checkbox("Move SL to Cost on Leg SL", value=True)
+        default_lot = 65 if underlying == "NIFTY" else 30
+        lot_size = c2.number_input("1 Lot Quantity", min_value=1, max_value=500, value=default_lot)
+        entry_t = c3.time_input("Entry Time", value=time(9, 20))
+        exit_t = c4.time_input("Exit Time", value=time(15, 15))
+        move_to_cost = c5.checkbox("Move SL to Cost on Leg SL", value=True)
 
         st.divider()
         for idx, leg in enumerate(st.session_state.legs):
@@ -444,7 +440,7 @@ with tabs[0]:
         ]
 
         cfg = StrategyConfig(
-            name="Custom Strategy", underlying=underlying, lot_size=lot_size,
+            name="Custom Strategy", underlying=underlying, lot_size=int(lot_size),
             entry_time=entry_t, exit_time=exit_t, legs=leg_objs,
             move_sl_to_cost=move_to_cost, overall_sl_mtm=overall_sl,
             overall_target_mtm=overall_tgt, slippage_pct=slippage, include_charges=include_taxes
@@ -483,28 +479,22 @@ with tabs[0]:
 
         st.dataframe(trades_df, use_container_width=True, hide_index=True)
 
-# ------------------------------------------
-# TAB 2: UNLIMITED INDICATOR BACKTEST
-# ------------------------------------------
 with tabs[1]:
     st.subheader("📈 Unlimited Technical Indicator Backtester (EMA / RSI / Supertrend on Options)")
     ic1, ic2, ic3, ic4 = st.columns(4)
     fast_ema = ic1.number_input("Fast EMA Length", 3, 50, 9)
-    slow_ema = ic2.number_input("Slow EMA Length", 10, 200, 21)
+    slow_ema = ic2.number_input("Slow EMA Length", 10, 200, 28)
     rsi_len = ic3.number_input("RSI Length", 5, 30, 14)
     ind_days = ic4.slider("Test Days", 10, 120, 45)
 
     if st.button("⚡ Run Indicator Backtest", type="primary"):
-        ind_df = run_indicator_backtest(ind_days, fast_ema, slow_ema, rsi_len, lot_size)
+        ind_df = run_indicator_backtest(ind_days, fast_ema, slow_ema, rsi_len, int(lot_size))
         st.metric("Cumulative Indicator Strategy PnL (₹)", f"₹{ind_df['cum_pnl'].iloc[-1]:,.2f}")
         fig_ind = go.Figure()
         fig_ind.add_trace(go.Scatter(y=ind_df["cum_pnl"], mode="lines", name="Indicator Equity", line=dict(color="#3b82f6", width=2)))
-        fig_ind.update_layout(title="EMA Crossover + RSI Options Equity Curve", height=360)
+        fig_ind.update_layout(title=f"EMA {fast_ema}/{slow_ema} + RSI({rsi_len}) Options Equity Curve (Lot={lot_size})", height=360)
         st.plotly_chart(fig_ind, use_container_width=True)
 
-# ------------------------------------------
-# TAB 3: 50+ LISTENING DEPLOYMENTS & 10 WATCHLISTS
-# ------------------------------------------
 with tabs[2]:
     st.subheader("📡 Active Signal Deployments (Listening State — Live & Forward Test)")
     col_a, col_b = st.columns([2, 1])
@@ -514,7 +504,7 @@ with tabs[2]:
         with st.form("new_deploy"):
             st.write("**Add New Listening Deployment (Unlimited)**")
             d_name = st.text_input("Strategy Name", "VWAP Breakout")
-            d_sym = st.selectbox("Symbol", ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"])
+            d_sym = st.selectbox("Symbol", ["NIFTY (Lot=65)", "BANKNIFTY (Lot=30)", "FINNIFTY", "SENSEX"])
             d_mode = st.selectbox("Deployment Type", ["LIVE (Listening)", "FORWARD TEST (Listening)"])
             if st.form_submit_button("➕ Put Strategy in Listening State"):
                 new_id = f"SIG-{101 + len(st.session_state.deployments)}"
@@ -525,13 +515,10 @@ with tabs[2]:
     st.subheader("👀 Multi-Watchlist Scanner Deployments")
     st.dataframe(pd.DataFrame(st.session_state.watchlists), use_container_width=True, hide_index=True)
 
-# ------------------------------------------
-# TAB 4: TRADINGVIEW TEMPLATES & PINESCRIPT CODING
-# ------------------------------------------
 with tabs[3]:
     st.subheader("📜 Ready-Made TradingView Strategy Templates & PineScript v5 Generator")
     tpl = st.selectbox("Select Ready-Made Template", [
-        "9/21 EMA Crossover + Dhan Webhook Alert",
+        "9/28 EMA Crossover + RSI + Dhan Webhook Alert",
         "Supertrend (10, 3) Intraday Option Buyer",
         "Opening Range Breakout (ORB 15-Min) Straddle Seller"
     ])
@@ -541,13 +528,14 @@ with tabs[3]:
         "action": "{{strategy.order.action}}",
         "strike_mode": "ATM",
         "lots": 1,
+        "qty": int(lot_size),
         "broker": "DHAN_V2"
     }, indent=2)
 
     pinescript_code = f"""//@version=5
 strategy("{tpl}", overlay=true)
 fast = ta.ema(close, 9)
-slow = ta.ema(close, 21)
+slow = ta.ema(close, 28)
 plot(fast, color=color.green)
 plot(slow, color=color.red)
 
@@ -567,9 +555,6 @@ if (shortCondition)
         st.write("**TradingView Webhook JSON Payload:**")
         st.code(webhook_json, language="json")
 
-# ------------------------------------------
-# TAB 5: AI AGENT STRATEGY BUILDER (FREE)
-# ------------------------------------------
 with tabs[4]:
     st.subheader("🤖 Built-In AI Strategy Agent (Zero Token Cost)")
     prompt = st.text_area("Describe the strategy you want to build in plain English:", placeholder="Example: Sell Nifty Iron Condor at 9:20 with 30% SL on sold legs and hedge 200 points away")
@@ -590,9 +575,6 @@ with tabs[4]:
             ]
             st.success("✅ Custom OTM Strangle with Wait & Trade loaded into Tab 1!")
 
-# ------------------------------------------
-# TAB 6: DHAN BROKER LIVE & PAPER TERMINAL
-# ------------------------------------------
 with tabs[5]:
     st.subheader("🟢 DhanHQ v2 Live Execution & Forward Testing")
     d1, d2, d3 = st.columns([1.5, 2.5, 1.5])
